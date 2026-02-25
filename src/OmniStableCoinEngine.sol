@@ -18,7 +18,8 @@ import {OmniStableCoin} from "./OmniStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-contract OSCEngine is ReentrancyGuard {
+import {OracleLib} from "./libraries/Oracles.lib.sol";
+contract OSCEngine is ReentrancyGuard { 
     ////////////////////// 
     ////////ERRORS//////// 
     ///////////////////// 
@@ -28,10 +29,15 @@ contract OSCEngine is ReentrancyGuard {
     error OSCEngine__FailedTransaction(); 
     error OSCEngine__RiskOfLiquidation();
     error OSCEngine__MintFailed();
+    error OSCEngine__NotEnoughCollateral();
     error OSCEngine__HealthNotImproved();
     error OSCEngine__BurnFailed(uint256 balance , uint256 burnAmount);
     error OSCEngine__CannotLiquidate(uint256 healthFactor);
-    
+    //////////////////////// 
+    ///Types//////
+    ////////////////////// 
+
+    using OracleLib for AggregatorV3Interface;
     //////////////////////// 
     ///STATE VARIABLES//////
     ////////////////////// 
@@ -187,7 +193,9 @@ contract OSCEngine is ReentrancyGuard {
     }
     function getHealthFactor() external{ }
     
-
+    function getCollateralTokenAddresses() external view returns (address[] memory){
+        return s_collateralTokens;
+    }
     
     //////////////////////// 
     ///INTERNAL FUNCTIONS////
@@ -245,6 +253,11 @@ contract OSCEngine is ReentrancyGuard {
     }
     function _redeemCollateral(address tokenCollateralAddress , uint256 amountCollateral , address from , address to) private {
         
+        uint256 current = s_loanerToCollateralValue[from][tokenCollateralAddress];
+
+        if (current < amountCollateral) {
+        revert OSCEngine__NotEnoughCollateral();
+        }
         s_loanerToCollateralValue[from][tokenCollateralAddress] -= amountCollateral;
         emit CollateralRedeemed(from , tokenCollateralAddress , amountCollateral);
 
@@ -265,7 +278,7 @@ contract OSCEngine is ReentrancyGuard {
         // use the price feed to get the value of token in usd 
         AggregatorV3Interface pricefeed = AggregatorV3Interface(s_priceFeeds[token]);
 
-        (, int256 price, , ,) = pricefeed.latestRoundData();
+        (, int256 price, , ,) = pricefeed.stalePriceCheck();
         //eg 2000usd / eth , 1000 usd worth of eth = 0.5eth
         tokenAmount = usdAmount * CONVERSION_PRICE_DECIMAL / (uint256(price) * ADDITIONAL_FEED_PRECISION);
 
@@ -281,13 +294,13 @@ contract OSCEngine is ReentrancyGuard {
     }
     function getCollateralValueInUsd(address token , uint256 amount) public view returns (uint256 value){
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price, , ,) = priceFeed.latestRoundData();
+        (, int256 price, , ,) = priceFeed.stalePriceCheck();
         value = ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / (CONVERSION_PRICE_DECIMAL);
 
     }
      function returnPriceValue(address token ) public view returns (int256 price){
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, price, , ,) = priceFeed.latestRoundData();
+        (, price, , ,) = priceFeed.stalePriceCheck();
         
 
     }
@@ -299,4 +312,13 @@ contract OSCEngine is ReentrancyGuard {
     function getOSCBalance(address user) public view returns(uint256){
         return s_OSCMinted[user];
     }
+
+    function getAccountInformation(address minter) external view returns(uint256 totalOSCMinted , uint256 collateralValueInUsd){
+        return _getAccountInformation(minter);
+    }
+
+    function getCollateralTokenPriceFeed(address token) external view returns (address) {
+        return s_priceFeeds[token];
+    }
+    
 }
